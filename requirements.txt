@@ -1,0 +1,12 @@
+# Model processes (Python 3.11, CUDA). Versions the system was run with.
+torch==2.11.0        # +cu128
+torchvision==0.26.0  # +cu128
+numpy==1.26.4
+scipy==1.17.1
+pillow==11.3.0
+opencv-python==4.11.0.86
+ultralytics==8.4.215     # YOLO-World
+transformers==5.23.0
+einops==0.8.2            # UniDepth
+timm==1.0.31             # UniDepth
+# The CARLA client (collect_lot.py) runs on Python 3.7 with the CARLA 0.9.11 egg, numpy and pillow.

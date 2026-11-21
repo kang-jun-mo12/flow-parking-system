@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+
+# Too large for git: the Release asset (README)
+weights/ddp_frontend.pt
+
+# Run outputs
+runs/
+out/
