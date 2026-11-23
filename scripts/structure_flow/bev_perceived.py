@@ -99,6 +99,31 @@ def blobs(logit, flow, mask_at=None):
     return found
 
 
+YOLO_AT = .5                # YOLO person score whose footprint counts as a person found by the tracker
+
+
+def yolo_blobs(evidence, velocity, found):
+    """The footprints of YOLO's people (person layer >= YOLO_AT) that no refiner blob of found lies within
+    People.GATE of, as blobs() rows with the strongest logit People.START: the refiner can miss a person the detector
+    sees well for seconds."""
+    import cv2
+    layer = evidence[4] >= int(round(255*YOLO_AT))
+    if not layer.any():
+        return []
+    count, labels, stats, centres = cv2.connectedComponentsWithStats(layer.astype(np.uint8), connectivity=8)
+    out = []
+    for i in range(1, count):
+        if stats[i, cv2.CC_STAT_AREA] < MIN_CELLS:
+            continue
+        x, y = R.cell_to_ego(centres[i][1], centres[i][0])
+        if any(math.hypot(b[0]-x, b[1]-y) < People.GATE for b in found):
+            continue
+        cells = labels == i
+        vx, vy = float(np.asarray(velocity[0], np.float32)[cells].mean()), float(np.asarray(velocity[1], np.float32)[cells].mean())
+        out.append((x, y, vx, vy, People.START))
+    return out
+
+
 def people(logit, flow, mask_at=None, peak_at=None):
     """The blobs whose strongest cell is above peak_at as [WALKERS, 5] ego x, y, vx, vy, valid, the nearest first
     (frame by frame, without People's memory)."""
@@ -120,8 +145,12 @@ class People:
     START, CONFIRM = 3., 2          # logit of the strongest cell that starts a track; hits before it is given out
     SURE = 4.                       # a blob this strong is given out at once
     GATE = 1.                       # m between a blob and the predicted position
-    COAST, COAST_BLIND = 2, 10      # decision steps (0.2 s) a track lives unseen
-    BLIND = (3.4, 2.7)              # |x|, |y| of the strip beside the car in its frame, m
+    COAST, COAST_BLIND = 2, 20      # decision steps (0.2 s) a track lives unseen
+    HISTORY = 8                     # decision steps of matched positions the velocity is fitted over
+    PULL, PULL_MAX, FLANK = .1, .5, 1.35    # m per unseen step a person beside the car is given out nearer, at most,
+                                            # never nearer the car's centre line than FLANK
+    BLIND = (3.4, 4.5)              # |x|, |y| of the strip beside the car in its frame, m: the cameras at the car's
+                                    # ends leave its flanks unseen out to some 4 m
     NO_START = (3., 2.6)            # no person starts in there: nobody is first seen where no camera looks
     STEP = .2
 
@@ -132,9 +161,11 @@ class People:
 
     def reset(self):
         self.tracks = []
+        self.k = 0
 
     def step(self, found, pose):
         """found: blobs() of this frame (ego frame), pose (x, y, yaw deg) -> [WALKERS, 5] ego x, y, vx, vy, valid."""
+        self.k += 1
         c, s = math.cos(math.radians(pose[2])), math.sin(math.radians(pose[2]))
         seen = [(pose[0]+c*x-s*y, pose[1]+s*x+c*y, c*vx-s*vy, s*vx+c*vy, peak) for x, y, vx, vy, peak in found]
         for track in self.tracks:
@@ -150,6 +181,12 @@ class People:
             track, blob = self.tracks[i], seen[j]
             track.update(x=blob[0], y=blob[1], vx=.5*track['vx']+.5*blob[2], vy=.5*track['vy']+.5*blob[3],
                          hits=track['hits']+1, unseen=0, sure=track['sure'] or blob[4] >= self.SURE)
+            # the velocity layers lose speed while the car turns: the slope of the track's own world positions holds
+            track['history'] = [h for h in track.get('history', []) if h[0] > self.k-self.HISTORY]+[(self.k, blob[0], blob[1])]
+            h = np.array(track['history'], float)
+            if len(h) >= 3 and h[-1, 0]-h[0, 0] >= 3:
+                track['vx'] = float(np.polyfit(h[:, 0]*self.STEP, h[:, 1], 1)[0])
+                track['vy'] = float(np.polyfit(h[:, 0]*self.STEP, h[:, 2], 1)[0])
         kept = []
         for i, track in enumerate(self.tracks):
             ex, ey = c*(track['x']-pose[0])+s*(track['y']-pose[1]), -s*(track['x']-pose[0])+c*(track['y']-pose[1])
@@ -172,7 +209,13 @@ class People:
         out = np.zeros((WALKERS, 5), np.float32)
         given = [(math.hypot(*t['ego']), t) for t in kept if t['hits'] >= self.CONFIRM or t['sure']]
         for k, (_, t) in enumerate(sorted(given, key=lambda g: g[0])[:WALKERS]):
-            out[k] = (t['ego'][0], t['ego'][1], c*t['vx']+s*t['vy'], -s*t['vx']+c*t['vy'], 1.)
+            ex, ey = t['ego']
+            if t['unseen'] and abs(ex) < self.BLIND[0] and abs(ey) < self.BLIND[1]:
+                # unseen beside the car the person may be nearer than coasted (its last blobs were only its outer
+                # part in view): given out nearer the flank, the more so the longer unseen
+                pull = min(self.PULL*t['unseen'], self.PULL_MAX, max(0., abs(ey)-self.FLANK))
+                ey -= math.copysign(pull, ey)
+            out[k] = (ex, ey, c*t['vx']+s*t['vy'], -s*t['vx']+c*t['vy'], 1.)
         return out
 
 
@@ -206,7 +249,8 @@ class Perception:
             batch.update(history=tensor(np.stack([e for e, _ in back])), history_pose=tensor(np.stack([p for _, p in back])))
         static, dynamic, flow = refine(self.model, batch)
         self.memory = (self.memory+[(evidence, pose)])[-max(R.PAST+(R.HISTORY if self.model.memory else ())):]
-        return static[0], self.people.step(blobs(dynamic[0], flow[0]), pose)
+        found = blobs(dynamic[0], flow[0])
+        return static[0], self.people.step(found+yolo_blobs(evidence, velocity, found), pose)
 
 
 def episode(model, folder, device, batch_size=16):
@@ -222,7 +266,9 @@ def episode(model, folder, device, batch_size=16):
         ks = np.arange(start, min(start+batch_size, len(frames)))
         static, dynamic, flow = refine(model, frames_batch(model, evidence, velocity, poses, ks, device))
         statics.append(static)
-        walkers += [tracker.step(blobs(dynamic[j], flow[j]), poses[k]) for j, k in enumerate(ks)]
+        for j, k in enumerate(ks):
+            found = blobs(dynamic[j], flow[j])
+            walkers.append(tracker.step(found+yolo_blobs(evidence[k], velocity[k], found), poses[k]))
     return frames, np.concatenate(statics), np.stack(walkers)
 
 

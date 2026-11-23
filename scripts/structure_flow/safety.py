@@ -255,7 +255,7 @@ def staged(goal):
 
 
 # ---------------------------------------------------------------- the check of one candidate
-LOT_BOUND = (264., 304., -241., -178.)          # supervisor.LOT_BOUND: beyond it the mask is occupied
+LOT_BOUND = (264., 304., -247., -178.)          # supervisor.LOT_BOUND: beyond it the mask is occupied
 
 
 def perceived_scene(seen, pose):

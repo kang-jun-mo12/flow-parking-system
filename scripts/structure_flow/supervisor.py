@@ -36,7 +36,8 @@ STAGE_SECONDS = 25.
 ARBITER_ON, ARBITER_OFF = .5, .3     # the learned arbiter (bev_arbiter.py): in above ON, a conflict still above OFF
 REENTRY_QUIET_S = 3.        # after a hand-back props do not call the Flow back for this long (walkers do)
 FRONT_CLEAR = dict(trigger_m=5.5, wait_s=.6, stopped_kmh=.5)
-LOT_BOUND = (264., 304., -241., -178.)     # x_min, x_max, y_min, y_max (scene_server.BOUND): beyond it is
+LOT_BOUND = (264., 304., -247., -178.)     # x_min, x_max, y_min, y_max (scene_server.BOUND, y_min 6 m past the lot's
+                                           # end: the DDP evaluator's starts stand on the walkway there): beyond it is
 #                                            vegetation and kerb, painted into the static mask
 
 
@@ -96,6 +97,19 @@ class FlowDriver:
         s, lateral = ax*dx+ay*dy, -ay*dx+ax*dy
         heading = abs(math.atan2(-ay*math.cos(yaw)+ax*math.sin(yaw), ax*math.cos(yaw)+ay*math.sin(yaw)))
         return STAGE_PAST <= s <= STAGE_MAX and abs(lateral) <= .4 and heading <= math.radians(8.)
+
+    def stage_inside(self, transform):
+        """True if the car can stand where the reverse parking starts (staged()) inside the lot: its front at
+        STAGE_PAST past the slot along the car's heading lies within LOT_BOUND."""
+        gx, gy, gyaw = self.goal
+        cx, cy = gx+AISLE_FROM_SLOT*math.cos(gyaw), gy+AISLE_FROM_SLOT*math.sin(gyaw)
+        yaw = math.radians(transform.rotation.yaw)
+        ax, ay = -math.sin(gyaw), math.cos(gyaw)
+        if ax*math.cos(yaw)+ay*math.sin(yaw) < 0:
+            ax, ay = -ax, -ay
+        reach = STAGE_PAST+SPECS['half_length']
+        x, y = cx+reach*ax, cy+reach*ay
+        return LOT_BOUND[0] <= x <= LOT_BOUND[1] and LOT_BOUND[2] <= y <= LOT_BOUND[3]
 
     def prop_tracks(self, transform):
         """The props as standing objects for the gate (class 'vehicle', relevant at once): the Flow takes over when
@@ -255,7 +269,9 @@ class FlowDriver:
             # parallel to it (the parking planner reverses in from there), at most STAGE_SECONDS
             if self.clear_since is None:
                 self.clear_since = t
-            if not self.staged(transform) and not self.hand_back and t-self.clear_since < STAGE_SECONDS:
+            # (where that start lies past the lot's end, the parking model drives again once the walkers are clear)
+            if (not self.staged(transform) and self.stage_inside(transform) and not self.hand_back
+                    and t-self.clear_since < STAGE_SECONDS):
                 report = dict(report, active=True)
         if not report['active']:
             if self.active:

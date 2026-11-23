@@ -1,4 +1,4 @@
-"""Static Town04_Opt parking benchmark of the DDP evaluator, driven by plan_server.
+"""Static Town04_Opt parking benchmark of the DDP evaluator, driven by plan_server (or action_server, --actions).
 
 Runs under Python 3.7 with the CARLA 0.9.11 egg. The protocol is that of
 carla_parking_eva.py, data_generation/network_evaluator.py, world.py and
@@ -445,6 +445,7 @@ class Bench:
         counters = dict(in_goal=0, near_goal=0, near_other=0, outside=0)
         trace, plans, seconds = [], [], []
         next_plan, outcome, step, total = HOLD_FRAMES, None, -1, 0
+        chunk, used = None, 0           # --actions: the controls in hand and how many of their frames were given
         self.other, self.motion, self.label = None, [], name
         while outcome is None:
             frame = self.world.tick(TICK_SECONDS)
@@ -453,6 +454,20 @@ class Bench:
             if step < HOLD_FRAMES:
                 self.ego.apply_control(carla.VehicleControl())
                 self.ego.set_transform(start)
+            elif args.actions:
+                # the action parking model (action_server.py): its controls frame by frame at 10 Hz, each held for
+                # the 3 ticks of a frame, generated again every replan_frames frames
+                if step % PROCESS_FRAMES == 0:
+                    target = self.track(goal, tracked)
+                    if chunk is None or used >= args.replan_frames:
+                        reply = self.plan(target)
+                        seconds.append(reply['seconds'])
+                        chunk, used = reply['controls'], 0
+                        plans.append(dict(frame=step, target=target, controls=chunk[:args.replan_frames]))
+                    throttle, steer, brake, reverse = chunk[min(used, len(chunk)-1)]
+                    used += 1
+                    self.ego.apply_control(carla.VehicleControl(throttle=float(throttle), steer=float(steer),
+                                                                brake=float(brake), reverse=bool(reverse)))
             else:
                 if step % PROCESS_FRAMES == 0:
                     target = self.track(goal, tracked)
@@ -558,6 +573,10 @@ def main():
     parser.add_argument('--save-motion', action='store_true', help='keep the 10 Hz dead reckoning inputs of every episode')
     parser.add_argument('--target', choices=('tracking', 'gt', 'corrected'), default='tracking',
                         help='tracking and gt are target types of the DDP agent, corrected removes the velocity point offset')
+    parser.add_argument('--actions', action='store_true',
+                        help='the server is action_server.py: drive its controls directly, with no path tracker')
+    parser.add_argument('--replan-frames', type=int, default=4,
+                        help='--actions: 10 Hz frames of the generated controls given before generating again')
     parser.add_argument('--seed', type=int, default=66)
     parser.add_argument('--map', default='Town04_Opt')
     parser.add_argument('--port', type=int, default=2000)

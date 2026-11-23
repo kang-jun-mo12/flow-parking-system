@@ -62,8 +62,11 @@ LOT_ROUTE = RouteConfig(max_expansions=80000)    # enough for the Flow scenes' s
 DETOUR = RouteConfig(max_expansions=20000)
 
 
+ROUTE_PAST_END = 6.     # m of route grid past the lot's end at y_min: the DDP evaluator starts the car at y -243.7
+
+
 def lot_world():
-    return WorldGrid(np.array([[BOUND[0], BOUND[2], 0.], [BOUND[1], BOUND[3], 0.]]), margin=0.)
+    return WorldGrid(np.array([[BOUND[0], BOUND[2]-ROUTE_PAST_END, 0.], [BOUND[1], BOUND[3], 0.]]), margin=0.)
 
 
 def box_points(x, y, yaw, length, width, pad=0.):

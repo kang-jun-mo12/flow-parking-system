@@ -37,6 +37,7 @@ sys.path.insert(0, str(HERE))
 import safety                                       # noqa: E402
 import bev_flow_data                                # noqa: E402
 
+BESIDE, BESIDE_UNSEEN = (3.4, 3.5), 2     # |x|, |y| m beside the car where a person unseen 2 steps hands over
 SHARED = {}                  # the frozen perception, the refiner and the arbiter: one copy for every car
 
 
@@ -80,6 +81,13 @@ class Car:
                 verdict = SHARED['arbiter'](pose, [float(g) for g in goal], static, walkers, forecast, planned, speed,
                                             bool(message.get('reverse', False)))
             reply['arbiter'] = [float(verdict[0]), float(verdict[1])]
+            # a known person out of sight beside the car: where it is now is a guess of a metre either way, nearer
+            # than the arbiter can judge - the Flow takes the car while it is there
+            hidden = [t for t in perception.people.tracks if t['unseen'] >= BESIDE_UNSEEN
+                      and (t['hits'] >= perception.people.CONFIRM or t['sure'])
+                      and abs(t['ego'][0]) < BESIDE[0] and abs(t['ego'][1]) < BESIDE[1]]
+            if hidden:
+                reply['arbiter'][0] = max(reply['arbiter'][0], 1.)
         return reply
 
     def decide(self, message):

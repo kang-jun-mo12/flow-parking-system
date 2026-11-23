@@ -239,7 +239,7 @@ class Collector:
             # triggers sit on that approach), jittered as ours; no parked car on a pedestrian corridor (box 4.8 x
             # 2.2 m plus the walker's 0.3 m)
             sx, sy, syaw = hard.start(rng)
-            corridor = np.array(hard.corridor_points())
+            corridor = np.array(hard.corridor_points(), float).reshape(-1, 2)
             keep_free = [i for i, (x, y) in enumerate(SPOTS)
                          if (np.all(np.abs(corridor-(x, y)) <= (2.7, 1.4), axis=1)).any()]
         start = carla.Transform(carla.Location(x=sx, y=sy, z=EGO_Z), carla.Rotation(yaw=syaw))
